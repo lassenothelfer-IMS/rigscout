@@ -1,0 +1,88 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --surface-2: #eef0f3;
+  --border: #e1e4e9;
+  --border-strong: #c9ced7;
+  --text: #0e1116;
+  --muted: #5b6473;
+  --accent: #4640de;
+  --accent-soft: #ebeaff;
+  --accent-fg: #ffffff;
+  --good: #137a3a;
+  --good-soft: #e2f5e9;
+  --warn: #945600;
+  --warn-soft: #fcf0da;
+  --bad: #b3261e;
+  --bad-soft: #fde7e6;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0a0c10;
+    --surface: #12151b;
+    --surface-2: #191d25;
+    --border: #242933;
+    --border-strong: #343b48;
+    --text: #e8ebf0;
+    --muted: #949dab;
+    --accent: #8f89ff;
+    --accent-soft: #1e1c3f;
+    --accent-fg: #0a0c10;
+    --good: #4fd67f;
+    --good-soft: #0f2819;
+    --warn: #f5b93a;
+    --warn-soft: #2a200d;
+    --bad: #f47d74;
+    --bad-soft: #2e1513;
+    color-scheme: dark;
+  }
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-fg: var(--accent-fg);
+  --color-good: var(--good);
+  --color-good-soft: var(--good-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-bad: var(--bad);
+  --color-bad-soft: var(--bad-soft);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+@keyframes scan {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+
+.scan-bar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: scan 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scan-bar::after { animation: none; }
+}
