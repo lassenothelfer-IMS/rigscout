@@ -1,0 +1,29 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# In Render: New → Blueprint → pick this repo. Render prompts for the
+# `sync: false` values (secrets) on first deploy; they never live in git.
+services:
+  - type: web
+    name: rigscout
+    runtime: node
+    plan: free # spins down when idle; the first visit after a break takes a moment to wake up
+    buildCommand: npm ci && npm run build
+    startCommand: npx next start -H 0.0.0.0 -p $PORT
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: RIGSCOUT_ACCESS_CODE
+        sync: false # required: real searches are refused in production without it
+      - key: RIGSCOUT_MODEL
+        value: claude-sonnet-5
+      - key: RIGSCOUT_EFFORT
+        value: low
+      - key: RIGSCOUT_MAX_COST_USD
+        value: "1"
+      - key: RIGSCOUT_MAX_SEARCHES
+        value: "20"
+      - key: NEXT_TELEMETRY_DISABLED
+        value: "1"
