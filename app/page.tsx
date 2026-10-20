@@ -105,6 +105,20 @@ export default function Home() {
               doesn&apos;t trust.
             </p>
           </section>
+          <aside className="mx-auto mb-6 flex w-full max-w-2xl flex-col gap-3 rounded-2xl border border-accent/30 bg-accent-soft px-5 py-4 text-sm sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-pretty">
+              <span className="font-semibold">Just having a look? Thank you for stopping by! 👋</span>{" "}
+              <span className="text-muted">
+                Each real search is paid for out of my own pocket, so if you&apos;re only testing, I&apos;d be very grateful if you used the free demo
+                instead. It shows exactly how everything works. Thank you so much for understanding!
+              </span>
+            </p>
+            <div className="shrink-0 whitespace-nowrap">
+              <Button variant="secondary" onClick={() => start(true)}>
+                Watch the demo
+              </Button>
+            </div>
+          </aside>
           <Wizard value={request} onChange={setRequest} onSubmit={() => start(false)} onDemo={() => start(true)} />
         </>
       )}
