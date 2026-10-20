@@ -24,20 +24,52 @@ import { getRegion } from "./regions";
 import { BLOCKED_DOMAINS, domainOf, isBlocked, normalizeUrl, sourceType } from "./trust";
 import { verifyLinks } from "./verify";
 
-const MODEL = process.env.RIGSCOUT_MODEL || "claude-opus-5";
-const EFFORT = (process.env.RIGSCOUT_EFFORT || "high") as "low" | "medium" | "high" | "xhigh" | "max";
-const MAX_REQUESTS = 40; // API calls per run, incl. pause_turn continuations
-const MAX_REJECTIONS = 3; // times submit_recommendations may bounce before we accept with warnings
-
-// USD per million tokens, for the running cost estimate shown in the UI.
-const PRICING: Record<string, { input: number; output: number }> = {
-  "claude-opus-5": { input: 5, output: 25 },
-  "claude-opus-5-5": { input: 4, output: 20 },
-  "claude-sonnet-5": { input: 2, output: 10 },
-  "claude-fable-5-1": { input: 10, output: 50 },
-  "claude-haiku-4-5": { input: 1, output: 5 },
+// USD per million tokens, for the running cost estimate and the spend cap.
+// Only models that support this request shape (adaptive thinking, effort, the
+// 20260209 web tools, server-side fallbacks) belong here; anything else is
+// refused up front instead of failing with a 400 mid-run.
+const PRICING: Record<string, { input: number; output: number; cacheRead: number }> = {
+  "claude-opus-5": { input: 5, output: 25, cacheRead: 0.5 },
+  "claude-opus-5-5": { input: 4, output: 20, cacheRead: 0.2 },
+  "claude-sonnet-5": { input: 2, output: 10, cacheRead: 0.2 },
+  "claude-fable-5-1": { input: 10, output: 50, cacheRead: 0.25 },
 };
 const SEARCH_COST_USD = 0.01;
+
+const MODEL = process.env.RIGSCOUT_MODEL || "claude-opus-5";
+if (!(MODEL in PRICING)) {
+  throw new Error(`RIGSCOUT_MODEL "${MODEL}" is not supported. Use one of: ${Object.keys(PRICING).join(", ")}.`);
+}
+const EFFORT = (process.env.RIGSCOUT_EFFORT || "high") as "low" | "medium" | "high" | "xhigh" | "max";
+
+const MAX_REQUESTS = 25; // API calls per run, incl. pause_turn continuations
+const MAX_REJECTIONS = 3; // times submit_recommendations may bounce before we accept with warnings
+const MAX_TRANSIENT_RETRIES = 3;
+// Run-wide limits. max_uses on the web tools only bounds one API request, and a run makes many,
+// so these are what actually cap a run. At the soft limit the agent is told to wrap up;
+// at 1.5x the run is stopped.
+const MAX_COST_USD = Number(process.env.RIGSCOUT_MAX_COST_USD) || 6;
+const MAX_SEARCHES = Number(process.env.RIGSCOUT_MAX_SEARCHES) || 60;
+const MAX_PROMPT_TOKENS = 500_000; // history is re-read on every request; stay well inside the 1M window
+const HARD_LIMIT_FACTOR = 1.5;
+
+const sleep = (ms: number, signal: AbortSignal) =>
+  new Promise<void>((resolve) => {
+    if (signal.aborted) return resolve();
+    const t = setTimeout(resolve, ms);
+    signal.addEventListener("abort", () => (clearTimeout(t), resolve()), { once: true });
+  });
+
+/** Temporary failures worth retrying in place: overloaded/api_error (also as mid-stream SSE errors), 5xx, dropped connections, plain rate limits. */
+function isTransient(err: unknown): boolean {
+  if (!(err instanceof Anthropic.APIError) || err instanceof Anthropic.APIUserAbortError) return false;
+  if (err instanceof Anthropic.APIConnectionError) return true;
+  const body = err.error as { error?: { type?: string; details?: { error_code?: string } } } | undefined;
+  if (body?.error?.details?.error_code === "enforced_spend_limit_reached") return false; // lasts until the limit is raised
+  const type = body?.error?.type;
+  if (err.status === undefined) return type === "overloaded_error" || type === "api_error";
+  return err.status === 429 || err.status === 529 || err.status >= 500;
+}
 
 type Emit = (e: AgentEvent) => void;
 
@@ -47,7 +79,7 @@ function buildTools(req: BuildRequest): BetaToolUnion[] {
     {
       type: "web_search_20260209",
       name: "web_search",
-      max_uses: 30,
+      max_uses: 20,
       blocked_domains: BLOCKED_DOMAINS,
       user_location: region
         ? { type: "approximate", country: region.code, timezone: region.timezone, ...(req.city.trim() ? { city: req.city.trim() } : {}) }
@@ -56,9 +88,9 @@ function buildTools(req: BuildRequest): BetaToolUnion[] {
     {
       type: "web_fetch_20260209",
       name: "web_fetch",
-      max_uses: 25,
+      max_uses: 12,
       blocked_domains: BLOCKED_DOMAINS,
-      max_content_tokens: 20000,
+      max_content_tokens: 8000,
     },
     {
       name: "check_compatibility",
@@ -104,13 +136,31 @@ export async function runAgent(req: BuildRequest, emit: Emit, signal: AbortSigna
   const usage = { searches: 0, fetches: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   let rejections = 0;
   let jsonRetries = 0;
+  let transientRetries = 0;
   let nudged = false;
+  let promptTokens = 0; // size of the most recent request's prompt
+  let wrapUpSent = false;
+
+  const addUsage = (u: BetaMessage["usage"]) => {
+    usage.input += u.input_tokens;
+    usage.output += u.output_tokens;
+    usage.cacheRead += u.cache_read_input_tokens ?? 0;
+    usage.cacheWrite += u.cache_creation_input_tokens ?? 0;
+    usage.searches += u.server_tool_use?.web_search_requests ?? 0;
+    usage.fetches += u.server_tool_use?.web_fetch_requests ?? 0;
+    promptTokens = u.input_tokens + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+  };
+
+  const cost = () => {
+    const price = PRICING[MODEL];
+    return (
+      ((usage.input + usage.cacheWrite * 1.25) * price.input + usage.cacheRead * price.cacheRead + usage.output * price.output) / 1e6 +
+      usage.searches * SEARCH_COST_USD
+    );
+  };
 
   const emitUsage = () => {
-    const price = PRICING[MODEL] ?? PRICING["claude-opus-5"];
-    const costUsd =
-      ((usage.input + usage.cacheWrite * 1.25 + usage.cacheRead * 0.1) * price.input + usage.output * price.output) / 1e6 +
-      usage.searches * SEARCH_COST_USD;
+    const costUsd = cost();
     emit({
       type: "usage",
       searches: usage.searches,
@@ -132,8 +182,8 @@ export async function runAgent(req: BuildRequest, emit: Emit, signal: AbortSigna
           for (const r of block.content) seen.add(normalizeUrl(r.url));
           const domains = [...new Set(block.content.map((r) => domainOf(r.url)).filter(Boolean))];
           emit({ type: "results", count: block.content.length, domains: domains.slice(0, 6) });
-        } else if (block.content.error_code === "max_uses_exceeded") {
-          emit({ type: "status", message: "Search limit for this step reached." });
+        } else {
+          emit({ type: "status", message: `A web search failed (${block.content.error_code}).` });
         }
         break;
       case "web_fetch_tool_result":
@@ -144,6 +194,7 @@ export async function runAgent(req: BuildRequest, emit: Emit, signal: AbortSigna
           emit({ type: "fetched", url: block.content.url, ok: true, title: block.content.content.title ?? undefined });
         } else {
           emit({ type: "fetched", url: "", ok: false });
+          emit({ type: "status", message: `A page could not be fetched (${block.content.error_code}).` });
         }
         break;
       case "text":
@@ -160,6 +211,31 @@ export async function runAgent(req: BuildRequest, emit: Emit, signal: AbortSigna
 
   for (let step = 0; step < MAX_REQUESTS; step++) {
     if (signal.aborted) return;
+
+    const spent = cost();
+    if (spent >= MAX_COST_USD * HARD_LIMIT_FACTOR || usage.searches >= MAX_SEARCHES * HARD_LIMIT_FACTOR) {
+      emit({
+        type: "error",
+        code: "incomplete",
+        message: `Stopped at the spending limit (~$${spent.toFixed(2)}) before the agent finished. Try again with fewer constraints, or raise RIGSCOUT_MAX_COST_USD.`,
+      });
+      return;
+    }
+    const overSoftLimit = spent >= MAX_COST_USD || usage.searches >= MAX_SEARCHES || promptTokens >= MAX_PROMPT_TOKENS || step >= MAX_REQUESTS - 4;
+    if (overSoftLimit && !wrapUpSent) {
+      // Tell the agent to stop researching. Needs a user turn to attach to; after a
+      // pause_turn the last message is the assistant's, so try again next iteration.
+      const last = messages[messages.length - 1];
+      if (last?.role === "user") {
+        const note = {
+          type: "text" as const,
+          text: "Research budget reached. Do not search or fetch any more. Call submit_recommendations now with the best-supported result you have, and mention in warnings anything you could not verify.",
+        };
+        last.content = typeof last.content === "string" ? [{ type: "text", text: last.content }, note] : [...last.content, note];
+        wrapUpSent = true;
+        emit({ type: "status", message: "Research budget reached, asking the agent to wrap up." });
+      }
+    }
 
     const stream = client.beta.messages.stream(
       {
@@ -183,19 +259,29 @@ export async function runAgent(req: BuildRequest, emit: Emit, signal: AbortSigna
       msg = await stream.finalMessage();
       jsonRetries = 0;
     } catch (err) {
+      if (signal.aborted) throw err;
+      // Whatever this failed turn already ran was billed; count it before retrying.
+      const partial = stream.currentMessage;
+      stream.abort();
+      if (partial) {
+        addUsage(partial.usage);
+        emitUsage();
+      }
+      if (isTransient(err) && transientRetries < MAX_TRANSIENT_RETRIES) {
+        const wait = 5000 * 3 ** transientRetries++; // 5s, 15s, 45s
+        emit({ type: "status", message: `Anthropic is busy, retrying in ${wait / 1000}s…` });
+        await sleep(wait, signal);
+        continue;
+      }
       // Eager input streaming can yield tool input that isn't parseable JSON;
-      // re-issue that turn. Everything else (API errors, aborts) propagates.
-      if (err instanceof Anthropic.APIError || signal.aborted || jsonRetries++ >= 2) throw err;
-      emit({ type: "status", message: "A step came back garbled – retrying it." });
+      // re-issue that turn. Real API errors propagate.
+      if (err instanceof Anthropic.APIError || jsonRetries++ >= 2) throw err;
+      emit({ type: "status", message: "A step came back garbled, retrying it." });
       continue;
     }
+    transientRetries = 0;
 
-    usage.input += msg.usage.input_tokens;
-    usage.output += msg.usage.output_tokens;
-    usage.cacheRead += msg.usage.cache_read_input_tokens ?? 0;
-    usage.cacheWrite += msg.usage.cache_creation_input_tokens ?? 0;
-    usage.searches += msg.usage.server_tool_use?.web_search_requests ?? 0;
-    usage.fetches += msg.usage.server_tool_use?.web_fetch_requests ?? 0;
+    addUsage(msg.usage);
     emitUsage();
 
     if (msg.stop_reason === "refusal") {
@@ -207,11 +293,20 @@ export async function runAgent(req: BuildRequest, emit: Emit, signal: AbortSigna
       continue;
     }
 
-    const toolUses = msg.content.filter((b): b is BetaToolUseBlock => b.type === "tool_use");
-    if (msg.stop_reason === "max_tokens" && toolUses.length) {
-      emit({ type: "error", code: "incomplete", message: "The recommendation was cut off (output too long). Please try again." });
+    // Anything but a normal end or a tool call (max_tokens, context window exceeded, ...) can leave
+    // half-finished blocks that would make the next request a 400, so stop instead of nudging.
+    if (msg.stop_reason !== "end_turn" && msg.stop_reason !== "tool_use") {
+      emit({
+        type: "error",
+        code: "incomplete",
+        message:
+          msg.stop_reason === "max_tokens"
+            ? "The agent's answer was cut off (output too long). Please try again."
+            : `The agent stopped early (${msg.stop_reason}). Please try again.`,
+      });
       return;
     }
+    const toolUses = msg.content.filter((b): b is BetaToolUseBlock => b.type === "tool_use");
 
     if (toolUses.length === 0) {
       if (nudged) {
@@ -244,7 +339,8 @@ export async function runAgent(req: BuildRequest, emit: Emit, signal: AbortSigna
           results.push({ type: "tool_result", tool_use_id: tu.id, is_error: true, content: `Invalid input:\n${z.prettifyError(parsed.error)}` });
           continue;
         }
-        const { problems, result } = await reviewSubmission(parsed.data, req, seen, maxBudget, gaming, emit);
+        const { problems, result } = await reviewSubmission(parsed.data, req, seen, maxBudget, gaming, emit, signal);
+        if (signal.aborted) return;
         if (problems.length && rejections < MAX_REJECTIONS) {
           rejections++;
           emit({ type: "rejected", problems });
@@ -287,6 +383,7 @@ async function reviewSubmission(
   maxBudget: number,
   gaming: boolean,
   emit: Emit,
+  signal: AbortSignal,
 ): Promise<{ problems: string[]; result: FinalResult }> {
   const problems: string[] = [];
 
@@ -335,7 +432,7 @@ async function reviewSubmission(
   // Live link checks.
   const urls = listings.map((l) => l.listing.url);
   emit({ type: "verifying", count: new Set(urls).size });
-  const statuses = await verifyLinks(urls, seen);
+  const statuses = await verifyLinks(urls, seen, signal);
   for (const { label, listing, primary } of listings) {
     const st = statuses.get(listing.url);
     if (st === "broken") problems.push(`${label}: ${listing.url} is dead (404 / not found) – replace it.`);

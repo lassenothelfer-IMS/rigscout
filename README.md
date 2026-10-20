@@ -21,9 +21,22 @@ npm run dev
 
 Open http://localhost:3000. Without an API key, the **Watch a demo run** link replays a scripted run with sample data, so you can try the UI for free.
 
+### Before your first real run
+
+1. Create an API key in the [Anthropic Console](https://console.anthropic.com/settings/keys). It is separate from a claude.ai subscription.
+2. **Add credits** under Billing. A new account with no balance fails on the first request.
+3. Leave **web search and web fetch enabled** for your organization (Console privacy settings); the agent can't work without them.
+4. Put the key in `.env.local` and **restart `npm run dev`**. Next.js only reads env files at startup.
+
+New accounts have low rate limits, so the first runs may hit "rate limited"; wait a minute and retry, or set `RIGSCOUT_EFFORT=medium`.
+
 ## Cost
 
-A real search pays for web searches ($10 per 1,000, capped at 30 per API call) plus model tokens. With the default `claude-opus-5` expect very roughly **$1–4 per run**. That's an estimate, not a measurement; the live counter shows the actual running cost. To make runs cheaper, set `RIGSCOUT_EFFORT=medium` or `RIGSCOUT_MODEL=claude-sonnet-5` in `.env.local`. If you deploy it publicly, set `RIGSCOUT_ACCESS_CODE` so strangers can't spend your credits.
+A real search pays for web searches ($10 per 1,000) plus model tokens. With the default `claude-opus-5` expect very roughly **$1-4 per run**. That's an estimate, not a measurement; the live counter shows the running cost.
+
+Runs are capped so a bad run can't drain your account. The per-request `max_uses` on the web tools only limits one API call, so RigScout also enforces run-wide limits: at `RIGSCOUT_MAX_COST_USD` (default $6) or `RIGSCOUT_MAX_SEARCHES` (default 60) the agent is told to wrap up, and at 1.5x the run is stopped. The cost shown is an estimate; your Console usage page is the source of truth.
+
+To make runs cheaper, set `RIGSCOUT_EFFORT=medium` or `RIGSCOUT_MODEL=claude-sonnet-5` in `.env.local`. For public deployments, `RIGSCOUT_ACCESS_CODE` is required (real searches are refused in production without it), and at most `RIGSCOUT_MAX_CONCURRENT` (default 2) runs go at once.
 
 Requests opt into server-side refusal fallbacks (`fallbacks: "default"`), so if the model ever declines a request, Anthropic retries it on its recommended fallback model instead of failing.
 

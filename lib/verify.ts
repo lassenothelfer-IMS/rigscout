@@ -30,12 +30,12 @@ function isPublicHttpUrl(raw: string): boolean {
   return true;
 }
 
-async function liveCheck(url: string): Promise<"ok" | "ended" | "broken" | "blocked"> {
+async function liveCheck(url: string, signal: AbortSignal): Promise<"ok" | "ended" | "broken" | "blocked"> {
   if (!isPublicHttpUrl(url)) return "broken";
   try {
     const res = await fetch(url, {
       redirect: "follow",
-      signal: AbortSignal.timeout(9000),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(9000)]),
       headers: {
         "User-Agent": "Mozilla/5.0 (compatible; RigScout/1.0; +link-check)",
         Accept: "text/html,application/xhtml+xml",
@@ -62,14 +62,14 @@ async function liveCheck(url: string): Promise<"ok" | "ended" | "broken" | "bloc
   }
 }
 
-export async function verifyLinks(urls: string[], seen: Set<string>): Promise<Map<string, LinkStatus>> {
+export async function verifyLinks(urls: string[], seen: Set<string>, signal: AbortSignal): Promise<Map<string, LinkStatus>> {
   const unique = [...new Set(urls)];
   const out = new Map<string, LinkStatus>();
   let next = 0;
   const worker = async () => {
-    while (next < unique.length) {
+    while (next < unique.length && !signal.aborted) {
       const url = unique[next++];
-      const live = await liveCheck(url);
+      const live = await liveCheck(url, signal);
       const wasSeen = seen.has(normalizeUrl(url));
       out.set(
         url,
