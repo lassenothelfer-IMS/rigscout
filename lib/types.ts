@@ -120,5 +120,5 @@ export type AgentEvent =
   | { type: "verifying"; count: number }
   | { type: "result"; result: import("./schema").FinalResult }
   | { type: "usage"; searches: number; fetches: number; inputTokens: number; outputTokens: number; costUsd: number }
-  | { type: "error"; message: string; code?: "no_api_key" | "access_denied" | "api_error" | "aborted" | "incomplete" }
+  | { type: "error"; message: string; code?: "no_api_key" | "api_error" | "aborted" | "incomplete" }
   | { type: "done" };

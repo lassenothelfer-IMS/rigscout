@@ -2,7 +2,7 @@ import type { AgentEvent, BuildRequest } from "./types";
 
 /** POST the questionnaire and feed each server-sent event to `onEvent`. */
 export async function streamBuild(
-  body: { request: BuildRequest; demo?: boolean; accessCode?: string },
+  body: { request: BuildRequest; demo?: boolean },
   onEvent: (e: AgentEvent) => void,
   signal: AbortSignal,
 ): Promise<void> {

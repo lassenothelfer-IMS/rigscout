@@ -36,7 +36,7 @@ A real search pays for web searches ($10 per 1,000) plus model tokens. With the 
 
 Runs are capped so a bad run can't drain your account. The per-request `max_uses` on the web tools only limits one API call, so RigScout also enforces run-wide limits: at `RIGSCOUT_MAX_COST_USD` (default $6) or `RIGSCOUT_MAX_SEARCHES` (default 60) the agent is told to wrap up, and at 1.5x the run is stopped. The cost shown is an estimate; your Console usage page is the source of truth.
 
-To make runs cheaper, set `RIGSCOUT_EFFORT=medium` or `RIGSCOUT_MODEL=claude-sonnet-5` in `.env.local`. For public deployments, `RIGSCOUT_ACCESS_CODE` is required (real searches are refused in production without it), and at most `RIGSCOUT_MAX_CONCURRENT` (default 2) runs go at once.
+To make runs cheaper, set `RIGSCOUT_EFFORT=medium` or `RIGSCOUT_MODEL=claude-sonnet-5` in `.env.local`. Anyone who can open the site can start real searches, so for a public deployment use a key from a separate Anthropic workspace with a monthly spend limit. At most `RIGSCOUT_MAX_CONCURRENT` (default 2) runs go at once.
 
 Requests opt into server-side refusal fallbacks (`fallbacks: "default"`), so if the model ever declines a request, Anthropic retries it on its recommended fallback model instead of failing.
 

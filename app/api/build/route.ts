@@ -37,7 +37,7 @@ function describeApiError(err: InstanceType<typeof Anthropic.APIError>): { messa
 }
 
 export async function POST(request: Request) {
-  const body = (await request.json().catch(() => null)) as { request?: unknown; demo?: boolean; accessCode?: string } | null;
+  const body = (await request.json().catch(() => null)) as { request?: unknown; demo?: boolean } | null;
   const parsed = BuildRequestSchema.safeParse(body?.request);
   if (!parsed.success) {
     return Response.json({ error: "Invalid questionnaire", issues: parsed.error.issues }, { status: 400 });
@@ -61,14 +61,8 @@ export async function POST(request: Request) {
 
       let counted = false;
       try {
-        const accessCode = process.env.RIGSCOUT_ACCESS_CODE;
         if (body?.demo) {
           await runDemo(parsed.data, emit, request.signal);
-        } else if (!accessCode && process.env.NODE_ENV === "production") {
-          // Fail closed: a public deployment without a code would let anyone spend your credits.
-          emit({ type: "error", code: "access_denied", message: "Set RIGSCOUT_ACCESS_CODE on the server before running real searches in production." });
-        } else if (accessCode && body?.accessCode !== accessCode) {
-          emit({ type: "error", code: "access_denied", message: "This RigScout instance needs an access code." });
         } else if (activeRuns >= MAX_CONCURRENT_RUNS) {
           emit({ type: "error", code: "api_error", message: "RigScout is busy with other searches. Try again in a few minutes." });
         } else if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN && !process.env.ANTHROPIC_PROFILE) {

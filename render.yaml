@@ -15,8 +15,6 @@ services:
         value: "22"
       - key: ANTHROPIC_API_KEY
         sync: false
-      - key: RIGSCOUT_ACCESS_CODE
-        sync: false # required: real searches are refused in production without it
       - key: RIGSCOUT_MODEL
         value: claude-sonnet-5
       - key: RIGSCOUT_EFFORT

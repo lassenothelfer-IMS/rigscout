@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Wizard from "@/components/Wizard";
 import Research from "@/components/Research";
 import Results from "@/components/Results";
-import { Button, Icon, inputClass } from "@/components/ui";
+import { Button, Icon } from "@/components/ui";
 import { streamBuild } from "@/lib/client";
 import { DEFAULT_REQUEST, type AgentEvent, type BuildRequest } from "@/lib/types";
 import type { FinalResult } from "@/lib/schema";
@@ -13,7 +13,6 @@ type Phase = "form" | "running" | "done";
 type RunError = Extract<AgentEvent, { type: "error" }>;
 
 const STORAGE_KEY = "rigscout:request";
-const CODE_KEY = "rigscout:access-code";
 
 const read = (key: string) => {
   try {
@@ -37,7 +36,6 @@ export default function Home() {
   const [result, setResult] = useState<FinalResult | null>(null);
   const [error, setError] = useState<RunError | null>(null);
   const [startedAt, setStartedAt] = useState(0);
-  const [accessCode, setAccessCode] = useState("");
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -50,7 +48,6 @@ export default function Home() {
     // Restoring browser-only state after hydration; localStorage isn't available during SSR.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     if (saved) setRequest({ ...DEFAULT_REQUEST, ...saved });
-    setAccessCode(read(CODE_KEY) ?? "");
   }, []);
 
   const start = (demo: boolean) => {
@@ -66,7 +63,7 @@ export default function Home() {
     window.scrollTo({ top: 0 });
 
     streamBuild(
-      { request, demo, accessCode: accessCode || undefined },
+      { request, demo },
       (e) => {
         if (e.type === "result") setResult(e.result);
         if (e.type === "error") setError(e);
@@ -135,17 +132,6 @@ export default function Home() {
               <p className="text-sm text-muted">{error?.message ?? "The connection closed before results arrived."}</p>
               {error?.code === "no_api_key" && (
                 <pre className="overflow-x-auto rounded-lg bg-surface-2 p-3 font-mono text-xs">ANTHROPIC_API_KEY=sk-ant-...</pre>
-              )}
-              {error?.code === "access_denied" && (
-                <input
-                  className={inputClass}
-                  placeholder="Access code"
-                  value={accessCode}
-                  onChange={(e) => {
-                    setAccessCode(e.target.value);
-                    write(CODE_KEY, e.target.value);
-                  }}
-                />
               )}
               <div className="flex flex-wrap gap-2 pt-2">
                 <Button onClick={() => start(false)}>
